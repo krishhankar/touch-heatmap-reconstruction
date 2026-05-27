@@ -1,137 +1,71 @@
-# touch-heatmap-reconstruction
+# Touch Heatmap Reconstruction
 
-![Python](https://img.shields.io/badge/python-3.10.20-blue.svg)
-![PyTorch](https://img.shields.io/badge/pytorch-2.x-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-
-**Real-time end-to-end deep learning project**: simulate a capacitive touch sensor from
-mouse input, train a UNet to denoise noisy 20×20 sensor frames, and watch predictions live
-in a four-panel PyGame window.
+A deep learning project that reconstructs clean sub-pixel touch coordinates from extremely noisy capacitive sensor heatmaps. It uses a lightweight PyTorch UNet to filter out hardware interference and a speed-adaptive algorithm to provide ultra-smooth, real-time trajectory tracking.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
+1. **Install Dependencies:**
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt --break-system-packages
+pip install -r requirements.txt
+```
 
-# 2. Generate synthetic dataset  (~2-3 min, ~35 MB)
-python data/generate_dataset.py
+2. **Generate the Synthetic Dataset:**
+```bash
+python data/generate_dataset.py --samples 50000
+```
 
-# 3. Train the model  (~20-40 min on CPU)
-python model/train.py
+3. **Train the UNet Model:**
+```bash
+python model/train.py --epochs 40 --batch-size 64
+```
 
-# 4. (Optional) Evaluate and generate comparison images
-python model/evaluate.py
-
-# 5. Run the live demo
+4. **Run the Live Demo:**
+```bash
+# Draw with Left-Click. Press 'R' to clear, 'S' to save screenshot, 'ESC' to quit.
 python demo/live_demo.py
-
-# 5b. Run live demo without a trained model (raw sensor only)
-python demo/live_demo.py --no-model
 ```
 
 ---
 
-## Controls
+## 📁 Project Structure
 
-| Key / Action        | Effect                              |
-|---------------------|-------------------------------------|
-| Left-click + drag   | Record trajectory                   |
-| `R`                 | Clear both trails                   |
-| `S`                 | Save screenshot (`screenshot_NNN.png`) |
-| `ESC` / `Q`         | Quit                                |
-
----
-
-## Project Structure
-
-```
+```text
 touch-heatmap-reconstruction/
 ├── data/
-│   └── generate_dataset.py   — synthetic (noisy, clean) pair generator
+│   └── generate_dataset.py   # Synthetic noise & gaussian blob generator
 ├── model/
-│   ├── unet.py               — GhostStrokeUNet architecture
-│   ├── train.py              — training loop + checkpoint + curves
-│   └── evaluate.py           — metrics + visual comparison grid
+│   ├── unet.py               # GhostStrokeUNet architecture
+│   └── train.py              # PyTorch training loop
 ├── inference/
-│   └── centroid.py           — soft/hard argmax + frame utilities
+│   └── centroid.py           # Sub-pixel Soft-Argmax logic
 ├── demo/
-│   └── live_demo.py          — 4-panel PyGame window (main entry point)
+│   └── live_demo.py          # Real-time PyGame trajectory visualization
 ├── utils/
-│   ├── __init__.py
-│   └── noise.py              — gaussian / salt&pepper / drift / quantization
-├── checkpoints/              — created by train.py
-│   ├── ghoststroke_unet.pth
-│   ├── training_curves.png
-│   └── evaluation.png
-├── __init__.py
-├── requirements.txt
-└── README.md
+│   └── noise.py              # Hardware noise simulation (Drift, EMI, etc.)
+└── checkpoints/              # Saved model weights & training curves
 ```
 
 ---
 
-## Architecture — GhostStrokeUNet
+## 🧠 Architecture
 
-```
-Input  (B, 1, 20, 20)  — noisy sensor frame
-  │
-  ├─ Encoder
-  │    enc1  ConvBlock(1  → 16)   → (B, 16, 20, 20)
-  │    pool1 MaxPool2d(2)         → (B, 16, 10, 10)
-  │    enc2  ConvBlock(16 → 32)   → (B, 32, 10, 10)
-  │    pool2 MaxPool2d(2)         → (B, 32,  5,  5)
-  │
-  ├─ Bottleneck
-  │    ConvBlock(32 → 64)         → (B, 64,  5,  5)
-  │
-  ├─ Decoder  (skip connections)
-  │    up2   ConvTranspose2d(64→32)  → (B, 32, 10, 10)
-  │    dec2  ConvBlock(64 → 32)      (concat with enc2)
-  │    up1   ConvTranspose2d(32→16)  → (B, 16, 20, 20)
-  │    dec1  ConvBlock(32 → 16)      (concat with enc1)
-  │
-  └─ Head  Conv2d(16→1) + Sigmoid → (B, 1, 20, 20)
-
-Trainable parameters: ~58,000
-```
+The system operates in a four-stage pipeline:
+1. **Noise Simulation:** A clean 2D Gaussian touch is corrupted with baseline drift, Gaussian noise, salt-and-pepper artifacts, and ADC quantization to simulate physical hardware.
+2. **Denoising UNet:** A lightweight encoder-decoder CNN (`GhostStrokeUNet`) processes the 20x20 noisy grid and reconstructs a mathematically clean probability heatmap.
+3. **Soft-Argmax Centroid:** Instead of snapping to the brightest integer pixel, a spatial weighted average extracts the exact `(X, Y)` coordinate with sub-pixel precision.
+4. **Speed-Adaptive Smoothing:** A dynamic Exponential Moving Average (EMA) filter heavily smooths slow movements to eliminate idle jitter, but reduces smoothing during fast movements for zero-lag responsiveness.
 
 ---
 
-## Noise Pipeline (`utils/noise.py`)
+## 🎯 What Problem Does This Solve?
 
-Applied in order to every clean Gaussian heatmap:
+### The Problem
+Capacitive touch sensors (like trackpads or robotic skins) output raw grids of capacitance values. In the real world, these heatmaps are plagued by temperature drift, electrical interference, and dead pixels. Traditional firmware uses heavy heuristic algorithms or Kalman filters to derive a cursor position. However, these classical methods often fail on non-linear noise, cause severe cursor jitter, or introduce heavy rubber-band lag.
 
-1. **Baseline drift** — sinusoidal 2-D low-frequency surface
-2. **Gaussian noise** — σ ∈ U(0.05, 0.15)
-3. **Salt & pepper** — ratio ∈ U(0.01, 0.05)
-4. **Quantization** — 8-bit (256 levels)
-
----
-
-## Execution Order
-
-| Step | Command | Time |
-|------|---------|------|
-| Install | `pip install -r requirements.txt --break-system-packages` | ~2 min |
-| Dataset | `python data/generate_dataset.py` | ~2-3 min |
-| Train | `python model/train.py` | ~20-40 min (CPU) |
-| Evaluate | `python model/evaluate.py` | ~30 sec |
-| Demo | `python demo/live_demo.py` | instant |
-
----
-
-## Requirements
-
-```
-torch>=2.0.0,<2.4.0
-numpy>=1.24.0,<2.0.0
-pygame>=2.5.0
-matplotlib>=3.7.0
-scipy>=1.11.0
-tqdm>=4.65.0
-```
-
-Python 3.10.20 · Linux · CPU-only compatible
+### What Makes This Unique?
+Instead of manually tuning complex math filters, this project treats sensor tracking as an **image-to-image translation problem**. 
+- **AI-Driven Denoising:** The UNet organically learns what a "true touch" looks like versus background interference.
+- **Sub-Pixel Accuracy:** The soft-argmax technique provides vastly higher resolution than the physical sensor grid allows.
+- **Zero-Lag Smoothing:** The speed-adaptive tracker ensures the cursor feels perfectly steady when drawing slowly, but instantly responsive when swiping fast.

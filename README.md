@@ -1,71 +1,79 @@
-# Touch Heatmap Reconstruction
+# touch-heatmap-reconstruction
 
-A deep learning project that reconstructs clean sub-pixel touch coordinates from extremely noisy capacitive sensor heatmaps. It uses a lightweight PyTorch UNet to filter out hardware interference and a speed-adaptive algorithm to provide ultra-smooth, real-time trajectory tracking.
+## 1. Quick Intro
+**Real-time end-to-end deep learning project**: Simulate a capacitive touch sensor from mouse input, train a UNet to denoise noisy 20×20 sensor frames, and watch predictions live in a PyGame window with speed-adaptive temporal smoothing.
 
----
+## 2. What Problem This Solves & Why It's Unique
+Capacitive touch sensors (used in trackpads, touchscreens, and robotic tactile skins) don't naturally output an `(X, Y)` coordinate. Instead, they output a **raw 2D grid of capacitance values** (a heatmap). In real hardware, this heatmap is incredibly messy due to baseline drift, electromagnetic interference (EMI), hardware imperfections, and ADC quantization noise.
 
-## 🚀 Quick Start
+If you try to calculate a cursor position directly from this raw, noisy hardware data, your cursor will jump around erratically. Traditional firmware uses complex heuristic algorithms and heavy Kalman filters to fix this, but they often struggle with non-linear noise or "ghost touches."
 
-1. **Install Dependencies:**
+**What makes this unique:** 
+Instead of relying on rigid, heuristic-based algorithms, this project uses an end-to-end Deep Learning pipeline to solve the problem. We train a lightweight, real-time convolutional neural network (GhostStrokeUNet) to "clean" the corrupted hardware heatmap, reconstructing a mathematically perfect touch blob. Combined with a sub-pixel soft-argmax extractor and a custom speed-adaptive exponential moving average (EMA) filter, it completely eliminates idle jitter while tracking rapid movements with zero lag.
+
+## 3. Quick Start
+
 ```bash
-pip install -r requirements.txt
-```
+# 1. Install dependencies
+pip install -r requirements.txt --break-system-packages
 
-2. **Generate the Synthetic Dataset:**
-```bash
-python data/generate_dataset.py --samples 50000
-```
+# 2. Generate synthetic dataset  (~2-3 min, ~35 MB)
+python data/generate_dataset.py
 
-3. **Train the UNet Model:**
-```bash
-python model/train.py --epochs 40 --batch-size 64
-```
+# 3. Train the model  (~20-40 min on CPU)
+python model/train.py
 
-4. **Run the Live Demo:**
-```bash
-# Draw with Left-Click. Press 'R' to clear, 'S' to save screenshot, 'ESC' to quit.
+# 4. Run the live demo
 python demo/live_demo.py
 ```
 
----
-
-## 📁 Project Structure
+## 4. Project Structure
 
 ```text
 touch-heatmap-reconstruction/
 ├── data/
-│   └── generate_dataset.py   # Synthetic noise & gaussian blob generator
+│   └── generate_dataset.py   — synthetic (noisy, clean) pair generator
 ├── model/
-│   ├── unet.py               # GhostStrokeUNet architecture
-│   └── train.py              # PyTorch training loop
+│   ├── unet.py               — GhostStrokeUNet architecture
+│   ├── train.py              — training loop + checkpoint + curves
+│   └── evaluate.py           — metrics + visual comparison grid
 ├── inference/
-│   └── centroid.py           # Sub-pixel Soft-Argmax logic
+│   └── centroid.py           — soft/hard argmax + frame utilities
 ├── demo/
-│   └── live_demo.py          # Real-time PyGame trajectory visualization
+│   └── live_demo.py          — 5-panel PyGame window (main entry point)
 ├── utils/
-│   └── noise.py              # Hardware noise simulation (Drift, EMI, etc.)
-└── checkpoints/              # Saved model weights & training curves
+│   ├── __init__.py
+│   └── noise.py              — gaussian / salt&pepper / drift / quantization
+├── checkpoints/              — created by train.py
+│   ├── ghoststroke_unet.pth
+│   ├── training_curves.png
+│   └── evaluation.png
+├── __init__.py
+├── requirements.txt
+└── README.md
 ```
 
----
+## 5. Architecture — GhostStrokeUNet
 
-## 🧠 Architecture
+```text
+Input  (B, 1, 20, 20)  — noisy sensor frame
+  │
+  ├─ Encoder
+  │    enc1  ConvBlock(1  → 16)   → (B, 16, 20, 20)
+  │    pool1 MaxPool2d(2)         → (B, 16, 10, 10)
+  │    enc2  ConvBlock(16 → 32)   → (B, 32, 10, 10)
+  │    pool2 MaxPool2d(2)         → (B, 32,  5,  5)
+  │
+  ├─ Bottleneck
+  │    ConvBlock(32 → 64)         → (B, 64,  5,  5)
+  │
+  ├─ Decoder  (skip connections)
+  │    up2   ConvTranspose2d(64→32)  → (B, 32, 10, 10)
+  │    dec2  ConvBlock(64 → 32)      (concat with enc2)
+  │    up1   ConvTranspose2d(32→16)  → (B, 16, 20, 20)
+  │    dec1  ConvBlock(32 → 16)      (concat with enc1)
+  │
+  └─ Head  Conv2d(16→1) + Sigmoid → (B, 1, 20, 20)
 
-The system operates in a four-stage pipeline:
-1. **Noise Simulation:** A clean 2D Gaussian touch is corrupted with baseline drift, Gaussian noise, salt-and-pepper artifacts, and ADC quantization to simulate physical hardware.
-2. **Denoising UNet:** A lightweight encoder-decoder CNN (`GhostStrokeUNet`) processes the 20x20 noisy grid and reconstructs a mathematically clean probability heatmap.
-3. **Soft-Argmax Centroid:** Instead of snapping to the brightest integer pixel, a spatial weighted average extracts the exact `(X, Y)` coordinate with sub-pixel precision.
-4. **Speed-Adaptive Smoothing:** A dynamic Exponential Moving Average (EMA) filter heavily smooths slow movements to eliminate idle jitter, but reduces smoothing during fast movements for zero-lag responsiveness.
-
----
-
-## 🎯 What Problem Does This Solve?
-
-### The Problem
-Capacitive touch sensors (like trackpads or robotic skins) output raw grids of capacitance values. In the real world, these heatmaps are plagued by temperature drift, electrical interference, and dead pixels. Traditional firmware uses heavy heuristic algorithms or Kalman filters to derive a cursor position. However, these classical methods often fail on non-linear noise, cause severe cursor jitter, or introduce heavy rubber-band lag.
-
-### What Makes This Unique?
-Instead of manually tuning complex math filters, this project treats sensor tracking as an **image-to-image translation problem**. 
-- **AI-Driven Denoising:** The UNet organically learns what a "true touch" looks like versus background interference.
-- **Sub-Pixel Accuracy:** The soft-argmax technique provides vastly higher resolution than the physical sensor grid allows.
-- **Zero-Lag Smoothing:** The speed-adaptive tracker ensures the cursor feels perfectly steady when drawing slowly, but instantly responsive when swiping fast.
+Trainable parameters: ~58,000
+```

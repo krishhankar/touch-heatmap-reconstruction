@@ -28,23 +28,34 @@ def soft_argmax(heatmap: np.ndarray) -> Tuple[float, float]:
 
     Parameters
     ----------
-    heatmap : np.ndarray, shape (H, W), float32, values in [0, 1]
+    heatmap : np.ndarray, shape (H, W), float32
 
     Returns
     -------
     (cx, cy) — column and row centroid as floats.
-    Falls back to (W/2, H/2) if the heatmap is essentially zero.
+    Normalizes by the peak value first so low-amplitude model outputs
+    (near zero) still produce a meaningful centroid rather than falling
+    back to the image center.
+    Falls back to hard-argmax peak if the heatmap is essentially zero.
     """
     h, w = heatmap.shape
-    total = float(heatmap.sum())
-    if total < 1e-8:
-        return w / 2.0, h / 2.0
+
+    # Normalize by peak so amplitude doesn't affect the centroid
+    peak = float(heatmap.max())
+    if peak < 1e-8:
+        # Truly empty — use hard-argmax peak position
+        flat_idx = int(np.argmax(heatmap))
+        row, col = np.unravel_index(flat_idx, heatmap.shape)
+        return float(col), float(row)
+
+    normed = heatmap / peak  # values in [0, 1]
+    total = float(normed.sum())
 
     col_indices = np.arange(w, dtype=np.float32)[np.newaxis, :]  # (1, W)
     row_indices = np.arange(h, dtype=np.float32)[:, np.newaxis]  # (H, 1)
 
-    cx = float((heatmap * col_indices).sum() / total)
-    cy = float((heatmap * row_indices).sum() / total)
+    cx = float((normed * col_indices).sum() / total)
+    cy = float((normed * row_indices).sum() / total)
     return cx, cy
 
 

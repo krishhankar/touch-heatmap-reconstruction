@@ -1,0 +1,66 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+
+# ── Model checkpoints & weights (large files) ────────────────
+checkpoints/*.pth
+checkpoints/*.pt
+checkpoints/*.onnx
+checkpoints/*.bin
+*.pth
+*.pt
+*.onnx
+
+# ── Dataset files (large) ────────────────────────────────────
+data/*.npz
+data/*.npy
+data/*.h5
+data/*.hdf5
+data/*.csv
+data/*.pkl
+
+# ── Training outputs ─────────────────────────────────────────
+checkpoints/*.png
+runs/
+logs/
+wandb/
+mlruns/
+*.log
+
+# ── Demo screenshots ─────────────────────────────────────────
+screenshot_*.png
+
+# ── Jupyter ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── IDE / Editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ── OS files ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Misc ──────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.orig

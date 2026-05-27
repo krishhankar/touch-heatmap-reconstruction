@@ -1,10 +1,10 @@
 """
 demo/live_demo.py — Real-time PyGame touch-heatmap-reconstruction demo.
 
-Four-panel window:
-  [Noisy sensor]  [UNet prediction]
-  [Live trajectory (ground truth vs predicted)]
-  [Stats bar — FPS · latency · centroid XY]
+Five-panel window:
+  Row 1:  [Raw Noisy Sensor]  [UNet Prediction]
+  Row 2:  [True Trajectory]   [Predicted Trajectory]
+  Bottom: [Stats bar — FPS · latency · centroid XY]
 
 Controls:
   Left-click + drag  Record trajectory
@@ -24,7 +24,7 @@ import collections
 import os
 import sys
 import time
-from typing import Deque, List, Optional, Tuple
+from typing import Deque, Optional, Tuple
 
 import numpy as np
 import pygame
@@ -41,12 +41,12 @@ from inference.centroid import (  # noqa: E402
 
 # ── Layout constants ──────────────────────────────────────────────────────────
 GRID_SIZE: int = 20
-PANEL_SIZE: int = 240
-TRAJ_SIZE: int = 500
+PANEL_SIZE: int = 260
+TRAJ_SIZE: int = 360
 STATS_H: int = 50
 PAD: int = 12
 
-WINDOW_W: int = PANEL_SIZE * 2 + TRAJ_SIZE + PAD * 4
+WINDOW_W: int = TRAJ_SIZE * 2 + PAD * 3
 WINDOW_H: int = PANEL_SIZE + TRAJ_SIZE + STATS_H + PAD * 4
 
 # ── Colour palette (RGB) ──────────────────────────────────────────────────────
@@ -92,34 +92,38 @@ def draw_panel(
     surface: pygame.Surface,
     x: int,
     y: int,
+    w: int,
+    h: int,
     label: str,
     font: pygame.font.Font,
 ) -> None:
     """Draw a bordered sensor panel with a label above it."""
     # Background
-    panel_rect = pygame.Rect(x, y, PANEL_SIZE, PANEL_SIZE)
+    panel_rect = pygame.Rect(x, y, w, h)
     pygame.draw.rect(screen, PANEL_BG, panel_rect)
     pygame.draw.rect(screen, BORDER_COLOR, panel_rect, 2)
 
-    # Content
-    screen.blit(surface, (x, y))
+    # Content (scaled to fit panel)
+    scaled = pygame.transform.scale(surface, (w, h))
+    screen.blit(scaled, (x, y))
 
     # Label above panel
     label_surf = font.render(label, True, TEXT_COLOR)
     screen.blit(label_surf, (x, y - label_surf.get_height() - 3))
 
 
-def draw_trajectory(
+def draw_single_trajectory(
     screen: pygame.Surface,
-    true_trail: Deque[Tuple[float, float]],
-    pred_trail: Deque[Tuple[float, float]],
+    trail: Deque[Tuple[float, float]],
     x: int,
     y: int,
     w: int,
     h: int,
+    color: Tuple[int, int, int],
+    label: str,
     font: pygame.font.Font,
 ) -> None:
-    """Draw the ground-truth (green) and predicted (red) trajectory panel."""
+    """Draw a single trajectory panel with grid lines."""
     # Panel background
     traj_rect = pygame.Rect(x, y, w, h)
     pygame.draw.rect(screen, PANEL_BG, traj_rect)
@@ -141,28 +145,17 @@ def draw_trajectory(
         sy = int(y + cy / GRID_SIZE * h)
         return sx, sy
 
-    # Ground-truth trail (green)
-    if len(true_trail) > 1:
-        pts = [to_screen(cx, cy) for cx, cy in true_trail]
-        pygame.draw.lines(screen, ACCENT_GREEN, False, pts, 2)
-    if true_trail:
-        last = to_screen(*true_trail[-1])
-        pygame.draw.circle(screen, ACCENT_GREEN, last, 5)
+    # Draw trail
+    if len(trail) > 1:
+        pts = [to_screen(cx, cy) for cx, cy in trail]
+        pygame.draw.lines(screen, color, False, pts, 2)
+    if trail:
+        last = to_screen(*trail[-1])
+        pygame.draw.circle(screen, color, last, 5)
 
-    # Predicted trail (red)
-    if len(pred_trail) > 1:
-        pts = [to_screen(cx, cy) for cx, cy in pred_trail]
-        pygame.draw.lines(screen, ACCENT_RED, False, pts, 2)
-    if pred_trail:
-        last = to_screen(*pred_trail[-1])
-        pygame.draw.circle(screen, ACCENT_RED, last, 4)
-
-    # Legend
-    font_s = pygame.font.SysFont("Arial", 12)
-    screen.blit(font_s.render("● True", True, ACCENT_GREEN),
-                (x + 6, y + h - 18))
-    screen.blit(font_s.render("● Pred", True, ACCENT_RED),
-                (x + 60, y + h - 18))
+    # Label above panel
+    label_surf = font.render(label, True, color)
+    screen.blit(label_surf, (x, y - label_surf.get_height() - 3))
 
 
 def draw_stats(
@@ -186,10 +179,9 @@ def draw_stats(
 
     items = [
         (f"touch-heatmap-reconstruction", TEXT_COLOR, 12, True),
-        (f"FPS {fps:5.1f}", fps_color, 150, False),
-        (f"Latency {inference_ms:.1f}ms", TEXT_COLOR, 270, False),
-        (f"True ({true_xy[0]:.1f}, {true_xy[1]:.1f})", ACCENT_GREEN, 420, False),
-        (f"Pred ({pred_xy[0]:.1f}, {pred_xy[1]:.1f})", ACCENT_RED, 590, False),
+        (f"Latency {inference_ms:.1f}ms", TEXT_COLOR, 230, False),
+        (f"True ({true_xy[0]:.1f}, {true_xy[1]:.1f})", ACCENT_GREEN, 380, False),
+        (f"Pred ({pred_xy[0]:.1f}, {pred_xy[1]:.1f})", ACCENT_RED, 540, False),
     ]
     for text, color, offset, bold in items:
         f = font if bold else font_small
@@ -258,19 +250,39 @@ def run_demo(
     is_drawing = False
     inference_ms = 0.0
     screenshot_count = 0
+    pred_cx: float = GRID_SIZE / 2.0
+    pred_cy: float = GRID_SIZE / 2.0
 
-    # Panel anchor positions
+    # Speed-adaptive EMA smoothing for predicted centroid
+    # Heavy smoothing at low speeds (to eliminate jitter), low smoothing at high speeds (to prevent lag)
+    smooth_cx: float = GRID_SIZE / 2.0
+    smooth_cy: float = GRID_SIZE / 2.0
+    ema_initialized = False
+
+    # Number of noisy frames to average before inference (reduces input noise)
+    N_AVG_FRAMES = 5
+
+    # ── Panel layout ──────────────────────────────────────────────────────────
+    # Row 1: Two sensor heatmap panels side by side (centered)
+    heatmap_w = (WINDOW_W - PAD * 3) // 2
+    heatmap_h = PANEL_SIZE
     panel_noisy_x = PAD
     panel_noisy_y = PAD + 20
-    panel_pred_x = PAD * 2 + PANEL_SIZE
+    panel_pred_x = PAD * 2 + heatmap_w
     panel_pred_y = PAD + 20
-    traj_x = PAD * 3 + PANEL_SIZE * 2
-    traj_y = PAD + 20
-    traj_w = TRAJ_SIZE
-    traj_h = PANEL_SIZE + TRAJ_SIZE - 20 + PAD
+
+    # Row 2: Two trajectory panels side by side
+    traj_w = (WINDOW_W - PAD * 3) // 2
+    traj_h = TRAJ_SIZE
+    traj_true_x = PAD
+    traj_true_y = panel_noisy_y + heatmap_h + PAD + 20
+    traj_pred_x = PAD * 2 + traj_w
+    traj_pred_y = traj_true_y
 
     # Placeholder blank surface
-    blank_surf = frame_to_surface(np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32), PANEL_SIZE)
+    blank_surf = frame_to_surface(
+        np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32), PANEL_SIZE
+    )
 
     running = True
     while running:
@@ -305,8 +317,11 @@ def run_demo(
         gt_cx = float(np.clip(gt_cx, 0.0, GRID_SIZE - 1.0))
         gt_cy = float(np.clip(gt_cy, 0.0, GRID_SIZE - 1.0))
 
-        # Sensor frame from mouse position
-        frame = mouse_to_sensor_frame(mouse_x, mouse_y, WINDOW_W, WINDOW_H)
+        # Average N noisy frames to reduce per-frame noise variance
+        frame_acc = np.zeros((1, GRID_SIZE, GRID_SIZE), dtype=np.float32)
+        for _ in range(N_AVG_FRAMES):
+            frame_acc += mouse_to_sensor_frame(mouse_x, mouse_y, WINDOW_W, WINDOW_H)
+        frame = frame_acc / N_AVG_FRAMES
         noisy_2d = frame[0]  # (H, W)
 
         # Inference
@@ -315,8 +330,24 @@ def run_demo(
             tensor_in = frame_to_tensor(frame, device)
             with torch.no_grad():
                 pred_tensor = model(tensor_in)
-            pred_cx, pred_cy = extract_centroid_from_tensor(pred_tensor)
+            raw_cx, raw_cy = extract_centroid_from_tensor(pred_tensor)
             pred_2d = pred_tensor.detach().cpu().squeeze().numpy().astype(np.float32)
+
+            # Speed-adaptive EMA temporal smoothing
+            if not ema_initialized:
+                smooth_cx, smooth_cy = raw_cx, raw_cy
+                ema_initialized = True
+            else:
+                # Calculate distance between raw and current smooth position (in grid cells)
+                dist = np.hypot(raw_cx - smooth_cx, raw_cy - smooth_cy)
+                
+                # Dynamic alpha: low for small distances (heavy smoothing for slow/still movements)
+                # high for large distances (less smoothing to reduce lag during fast movements)
+                dynamic_alpha = float(np.clip(0.05 + 0.4 * dist, 0.02, 0.8))
+                
+                smooth_cx = dynamic_alpha * raw_cx + (1.0 - dynamic_alpha) * smooth_cx
+                smooth_cy = dynamic_alpha * raw_cy + (1.0 - dynamic_alpha) * smooth_cy
+            pred_cx, pred_cy = smooth_cx, smooth_cy
         else:
             pred_cx, pred_cy = gt_cx, gt_cy
             pred_2d = noisy_2d.copy()
@@ -334,17 +365,29 @@ def run_demo(
         noisy_surf = frame_to_surface(noisy_2d, PANEL_SIZE)
         pred_surf = frame_to_surface(pred_2d, PANEL_SIZE)
 
-        # Draw sensor panels
-        draw_panel(screen, noisy_surf, panel_noisy_x, panel_noisy_y,
-                   "Raw Noisy Sensor", font)
-        draw_panel(screen, pred_surf, panel_pred_x, panel_pred_y,
-                   "UNet Prediction" if using_model else "Noisy (no model)", font)
+        # Row 1: Sensor heatmap panels
+        draw_panel(
+            screen, noisy_surf,
+            panel_noisy_x, panel_noisy_y, heatmap_w, heatmap_h,
+            "Raw Noisy Sensor", font,
+        )
+        draw_panel(
+            screen, pred_surf,
+            panel_pred_x, panel_pred_y, heatmap_w, heatmap_h,
+            "UNet Prediction" if using_model else "Noisy (no model)", font,
+        )
 
-        # Trajectory panel (extends below panels)
-        draw_trajectory(screen, true_trail, pred_trail,
-                        traj_x, traj_y, traj_w, traj_h, font)
-        traj_label = font.render("Trajectory", True, TEXT_COLOR)
-        screen.blit(traj_label, (traj_x, traj_y - traj_label.get_height() - 3))
+        # Row 2: Separate trajectory panels
+        draw_single_trajectory(
+            screen, true_trail,
+            traj_true_x, traj_true_y, traj_w, traj_h,
+            ACCENT_GREEN, "True Trajectory", font,
+        )
+        draw_single_trajectory(
+            screen, pred_trail,
+            traj_pred_x, traj_pred_y, traj_w, traj_h,
+            ACCENT_RED, "Predicted Trajectory", font,
+        )
 
         # Stats bar
         fps = clock.get_fps()

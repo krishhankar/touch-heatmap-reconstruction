@@ -12,15 +12,17 @@ from typing import Tuple
 
 
 class ConvBlock(nn.Module):
-    """Double conv block: Conv→ReLU→Conv→ReLU with padding=1."""
+    """Double conv block: Conv→BN→ReLU→Conv→BN→ReLU with padding=1."""
 
     def __init__(self, in_channels: int, out_channels: int) -> None:
-        """Initialise ConvBlock with two 3×3 convolutions."""
+        """Initialise ConvBlock with two 3×3 convolutions and BatchNorm."""
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
 
